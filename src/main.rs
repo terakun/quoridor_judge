@@ -3,134 +3,130 @@ use std::thread;
 use std::io::{Read, Write};
 use std::io;
 
-use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 use std::time::Duration;
 use std::sync::mpsc;
 
-const H: u8 = 5;
-const W: u8 = 5;
+const H: usize = 5;
+const W: usize = 5;
+const PLAYER_NUM: usize = 2;
+
+fn in_area((y, x): (usize, usize)) -> bool {
+    0 <= y && y <= H && 0 <= x && x <= W
+}
+
+#[derive(Clone, PartialEq)]
+enum Dir {
+    Vertical,
+    Horizontal,
+    Empty,
+}
+
+impl Dir {
+    fn parse(input: &String) -> Option<Self> {
+        match input.as_ref() {
+            "V" => Some(Dir::Vertical),
+            "H" => Some(Dir::Horizontal),
+            _ => None,
+        }
+    }
+}
+
+type Table = Vec<Vec<Dir>>;
 
 struct Quoridor {
-    table: Vec<Vec<bool>>,
-    me: (u8, u8),
-    op: (u8, u8),
+    table: Table,
+    me: (usize, usize),
+    op: (usize, usize),
 }
 
 impl Quoridor {
     fn new() -> Self {
         Quoridor {
-            table: vec![vec![false; W as usize]; (2 * H - 1) as usize],
-            me: (0, W / 2),
-            op: (H - 1, W / 2),
+            table: vec![vec![Dir::Empty; W - 1]; H - 1],
+            me: (H - 1, W / 2),
+            op: (0, W / 2),
         }
     }
     fn display(&self) -> String {
-        let mut s = String::new();
-        for i in 0..(2 * W + 1) {
-            s += "#";
-        }
-        s += "\n";
-        for i in 0..(2 * H - 1) {
-            s += "#";
-            for j in 0..W {
-                if i % 2 == 0 {
-                    if self.me == (i / 2, j) {
-                        s += "A";
-                    } else if self.op == (i / 2, j) {
-                        s += "B";
-                    } else {
-                        s += " ";
+        let mut table: Vec<Vec<char>> = vec![vec![' '; 2 * W - 1]; 2 * H - 1];
+
+        for i in 0..H - 1 {
+            for j in 0..W - 1 {
+                match self.table[i][j] {
+                    Dir::Vertical => {
+                        table[2 * i][2 * j + 1] = '|';
+                        table[2 * (i + 1)][2 * j + 1] = '|';
                     }
-                    if j != W - 1 {
-                        if self.table[i as usize][j as usize] {
-                            s += "|";
-                        } else {
-                            s += ".";
-                        }
+                    Dir::Horizontal => {
+                        table[2 * i + 1][2 * j] = '-';
+                        table[2 * i + 1][2 * (j + 1)] = '-';
                     }
-                } else {
-                    if self.table[i as usize][j as usize] {
-                        s += "-";
-                    } else {
-                        s += ".";
-                    }
-                    if j != W - 1 {
-                        s += ".";
-                    }
+                    _ => {}
                 }
             }
-            s += "#";
-            s += "\n";
         }
-        for i in 0..(2 * W + 1) {
-            s += "#";
+        for i in 0..H - 1 {
+            for j in 0..W - 1 {
+                table[2 * i + 1][2 * j + 1] = '*';
+            }
         }
+        table[2 * self.me.0][2 * self.me.1] = 'P';
+        table[2 * self.op.0][2 * self.op.1] = 'E';
+        let mut s = String::new();
+        s += &(0..(2 * W + 1)).map(|_| "#").collect::<String>();
+        s += "\n";
+        for i in 0..2 * H - 1 {
+            let row: String = table[i].clone().into_iter().collect();
+            s += &format!("#{}#\n", row);
+        }
+        s += &(0..(2 * W + 1)).map(|_| "#").collect::<String>();
         s += "\n";
         s
     }
+
     fn play(&mut self, com: &Command) -> Result<(), String> {
         match com {
-            Command::Put { p1, p2 } => {
-                self.table[p1.0 as usize][p1.1 as usize] = true;
-                self.table[p2.0 as usize][p2.1 as usize] = true;
+            Command::Put(y, x, dir) => {
+                if self.table[*y - 1][*x] != Dir::Empty {
+                    return Err("Wall has already built".to_string());
+                }
+                self.table[*y - 1][*x] = dir.clone();
             }
-            dir => {
-                let (dy, dx) = dir.to_dydx();
-                self.op.0 = (self.op.0 as i8 + dy) as u8;
-                self.op.1 = (self.op.1 as i8 + dx) as u8;
+            Command::Move(y, x) => {
+                if !in_area((*y, *x)) {
+                    return Err("Position is out of bounds".to_string());
+                }
+                self.me = (*y, *x);
             }
         }
-        // std::mem::swap(&mut self.me, &mut self.op);
+        std::mem::swap(&mut self.me, &mut self.op);
         Ok(())
     }
 }
 
-/*
-#######
-# #b# #
-#######
-# # # #
-#######
-# #a# #
-#######
-*/
 enum Command {
-    Left,
-    Up,
-    Right,
-    Down,
-    Put { p1: (u8, u8), p2: (u8, u8) },
+    Move(usize, usize),
+    Put(usize, usize, Dir),
 }
 
 impl Command {
-    fn to_dydx(&self) -> (i8, i8) {
-        match *self {
-            Command::Left => (0, -1),
-            Command::Up => (-1, 0),
-            Command::Right => (0, 1),
-            Command::Down => (1, 0),
-            _ => {
-                panic!("error in to_dydx");
-            }
+    fn parse(input: &str) -> Option<Self> {
+        let input_vec: Vec<&str> = input.trim().split_whitespace().collect();
+        if input_vec.len() < 2 {
+            return None;
         }
-    }
-    fn parse(input: &str) -> Self {
-        match input {
-            "L" => Command::Left,
-            "U" => Command::Up,
-            "R" => Command::Right,
-            "D" => Command::Down,
-            s => {
-                let pos: Vec<u8> = s.trim()
-                    .split_whitespace()
-                    .map(|s| s.parse::<usize>().unwrap() as u8)
-                    .collect();
-                Command::Put {
-                    p1: (pos[0], pos[1]),
-                    p2: (pos[2], pos[3]),
+        let y = input_vec[0].parse::<usize>().unwrap();
+        let x = input_vec[1].parse::<usize>().unwrap();
+        if input_vec.len() != 3 {
+            Some(Command::Move(y, x))
+        } else {
+            let dir = match Dir::parse(&input_vec[2].to_string()) {
+                Some(dir) => dir,
+                None => {
+                    return None;
                 }
-            }
+            };
+            Some(Command::Put(y, x, dir))
         }
     }
 }
@@ -154,7 +150,7 @@ impl JudgeServer {
         let mut num = 0;
         let (tx, rx) = mpsc::channel();
         loop {
-            if num >= 2 {
+            if num >= PLAYER_NUM {
                 break;
             }
             let (mut stream, addr) = match lis.accept() {
@@ -194,26 +190,23 @@ impl JudgeServer {
         loop {
             thread::sleep(Duration::from_micros(100));
             for (from_id, message) in rx.recv().iter() {
-                for (id, mut stream) in self.streams.iter().enumerate() {
-                    println!("{}", message.len());
-                    let command = Command::parse(&message);
-                    if id != *from_id {
-                        /* ゲーム進行 */
-                        match self.game.play(&command) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                println!("{}", e);
-                                return Ok(());
-                            }
-                        }
-                        let result = self.game.display();
-                        /* 結果を相手に出力 */
-                        stream.write(&result.as_bytes())?;
+                let mut stream: &TcpStream = &mut self.streams[(from_id + 1) as usize % PLAYER_NUM];
+                println!("{}", message.len());
+                let command = Command::parse(&message).expect("parse error");
+                /* ゲーム進行 */
+                match self.game.play(&command) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        println!("{}", e);
+                        return Ok(());
                     }
                 }
+                let result = self.game.display();
+                println!("{}", result);
+                /* 結果を相手に出力 */
+                stream.write(&result.as_bytes())?;
             }
         }
-        Ok(())
     }
 }
 fn main() {
