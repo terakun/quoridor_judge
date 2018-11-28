@@ -41,7 +41,7 @@ enum Colour {
     Black,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Dir {
     Vertical,
     Horizontal,
@@ -68,6 +68,7 @@ struct Quoridor {
     turn_num: u16,
     white_wall_num: usize,
     black_wall_num: usize,
+    record: Vec<Command>,
 }
 
 impl Quoridor {
@@ -81,6 +82,7 @@ impl Quoridor {
             turn_num: 1,
             white_wall_num: 0,
             black_wall_num: 0,
+            record: Vec::new(),
         }
     }
 
@@ -89,7 +91,11 @@ impl Quoridor {
             return false;
         }
         let (y, x) = (y as usize, x as usize);
-        self.table[y][x] != None && self.table[y][x].unwrap().0 == dir
+        if let Some((d, _)) = self.table[y][x] {
+            d == dir
+        } else {
+            false
+        }
     }
     fn settable(&self, y: usize, x: usize, dir: Dir) -> Result<(), String> {
         let y = y - 1;
@@ -122,7 +128,7 @@ impl Quoridor {
             if dx == 1 {
                 (y - 1, x, y, x, Dir::Vertical)
             } else {
-                (y - 1, x, y, x - 1, Dir::Vertical)
+                (y - 1, x - 1, y, x - 1, Dir::Vertical)
             }
         } else {
             if dy == 1 {
@@ -131,17 +137,7 @@ impl Quoridor {
                 (y - 1, x, y - 1, x - 1, Dir::Horizontal)
             }
         };
-        let cell1 = if in_wall_area(y1, x1) {
-            self.table[y1 as usize][x1 as usize]
-        } else {
-            None
-        };
-        let cell2 = if in_wall_area(y2, x2) {
-            self.table[y2 as usize][x2 as usize]
-        } else {
-            None
-        };
-        (cell1 != None && cell1.unwrap().0 == dir) || (cell2 != None && cell2.unwrap().0 == dir)
+        self.checkwalldir(y1, x1, dir) || self.checkwalldir(y2, x2, dir)
     }
     fn next_moves(&self) -> Vec<(usize, usize)> {
         let mut moves = Vec::new();
@@ -171,9 +167,11 @@ impl Quoridor {
                     if me == (y2, x2) {
                         continue;
                     }
-                    moves.push((y2 as usize, x2 as usize));
+                    if in_area(y2 as usize, x2 as usize) {
+                        moves.push((y2 as usize, x2 as usize));
+                    }
                 }
-            } else {
+            } else if in_area(y as usize, x as usize) {
                 moves.push((y as usize, x as usize));
             }
         }
@@ -184,12 +182,13 @@ impl Quoridor {
             return Err("Position is out of bounds".to_string());
         }
         let moves = self.next_moves();
+        println!("{:?}", moves);
         for m in moves {
             if (y, x) == m {
                 return Ok(());
             }
         }
-        Err("illegal operation".to_string())
+        Err("illegal move".to_string())
     }
     fn display(&self) -> String {
         let mut table: Vec<Vec<char>> = vec![vec![' '; 2 * W - 1]; 2 * H - 1];
@@ -261,10 +260,12 @@ impl Quoridor {
         }
         self.is_white_turn = !self.is_white_turn;
         self.turn_num += 1;
+        self.record.push(*com);
         Ok(())
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 enum Command {
     Move(usize, usize),
     Put(usize, usize, Dir),
@@ -292,9 +293,9 @@ impl Command {
     }
 }
 
-enum Player {
-    Human,
-    AI(String),
+struct Player {
+    ip: String,
+    name: String,
 }
 
 struct JudgeServer {
@@ -340,6 +341,7 @@ impl JudgeServer {
         output
     }
 
+    // https://www.quoridorfansite.com/tools/qfb.html
     fn viewformat(&self) -> String {
         let mut bv = BitVec::new();
         bv.push(true);
@@ -396,6 +398,10 @@ impl JudgeServer {
         bitvec_to_base64(bv)
     }
 
+    fn viewrecordformat(&self) -> String {
+        String::new()
+    }
+
     fn start(&mut self) -> io::Result<()> {
         println!("{}", self.game.display());
 
@@ -412,7 +418,10 @@ impl JudgeServer {
                 }
             };
             self.streams.push(stream.try_clone().unwrap());
-            self.players.push(Player::AI(addr.to_string()));
+            self.players.push(Player {
+                ip: addr.to_string(),
+                name: String::new(),
+            });
             let tx = tx.clone();
 
             let _ = thread::spawn(move || -> io::Result<()> {
@@ -458,9 +467,10 @@ impl JudgeServer {
                 let result = self.game.display();
                 let socketmsg = self.socketformat();
                 let sendmsg = self.viewformat();
-                println!("{}", socketmsg);
-                println!("{}", sendmsg);
-                let _ = self.broadcaster.send(ws::Message::Text(sendmsg));
+                println!("{}", result);
+                println!("socket format:\n{}", socketmsg);
+                println!("browser format:\n{}", sendmsg);
+                self.broadcaster.send(ws::Message::Text(sendmsg)).unwrap();
 
                 let mut stream: &TcpStream = &mut self.streams[(from_id + 1) as usize % PLAYER_NUM];
                 stream.write(&socketmsg.as_bytes())?;
