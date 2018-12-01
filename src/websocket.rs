@@ -36,7 +36,7 @@ impl Factory for MyFactory {
     type Handler = Server;
 
     fn connection_made(&mut self, ws: Sender) -> Server {
-        let stream = TcpStream::connect("157.82.205.48:8080").unwrap();
+        let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
         Server {
             stream: stream,
             out: ws,

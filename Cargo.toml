@@ -6,3 +6,4 @@ authors = ["Terasaki Shun <t.tera1217@gmail.com>"]
 [dependencies]
 ws = "*"
 bit-vec = "*"
+uuid = { version = "0.7", features = ["v4"] }

@@ -1,8 +1,11 @@
 extern crate bit_vec;
+extern crate uuid;
 extern crate ws;
 
 mod base64;
 mod websocket;
+
+use uuid::Uuid;
 use bit_vec::BitVec;
 use base64::{append, bitvec_to_base64, from_u16, from_u8};
 use ws::{CloseCode, Factory, Handler, Message, Sender};
@@ -11,7 +14,7 @@ use std::thread;
 use std::io::{Read, Write};
 use std::io;
 use std::env;
-
+use std::fs;
 use std::time::Duration;
 use std::sync::mpsc;
 
@@ -20,6 +23,7 @@ const H: usize = 9;
 const W: usize = 9;
 const PLAYER_NUM: usize = 2;
 const DPOS: [(i8, i8); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
+const DYDX2MOVEDIR: [[u8; 3]; 3] = [[3, 4, 5], [2, 8, 6], [1, 0, 7]];
 
 fn pos_to_u8((y, x): (usize, usize)) -> u8 {
     ((W - 1 - y) * W + x) as u8
@@ -68,7 +72,7 @@ struct Quoridor {
     turn_num: u16,
     white_wall_num: usize,
     black_wall_num: usize,
-    record: Vec<Command>,
+    record: Vec<Record>,
 }
 
 impl Quoridor {
@@ -80,12 +84,21 @@ impl Quoridor {
             is_white_turn: true,
             last_move: None,
             turn_num: 1,
-            white_wall_num: 0,
-            black_wall_num: 0,
+            white_wall_num: WALL_LIMIT,
+            black_wall_num: WALL_LIMIT,
             record: Vec::new(),
         }
     }
 
+    fn is_over(&self) -> Option<usize> {
+        if self.white.0 == 0 {
+            Some(0)
+        } else if self.black.0 == H - 1 {
+            Some(1)
+        } else {
+            None
+        }
+    }
     fn checkwalldir(&self, y: i8, x: i8, dir: Dir) -> bool {
         if !in_wall_area(y, x) {
             return false;
@@ -98,6 +111,11 @@ impl Quoridor {
         }
     }
     fn settable(&self, y: usize, x: usize, dir: Dir) -> Result<(), String> {
+        if (self.is_white_turn && self.white_wall_num == 0)
+            || (!self.is_white_turn && self.black_wall_num == 0)
+        {
+            return Err("You have no wall".to_string());
+        }
         let y = y - 1;
         if !in_wall_area(y as i8, x as i8) {
             return Err("Put position is out of bounds".to_string());
@@ -156,17 +174,27 @@ impl Quoridor {
             if self.exist_wall(me.0, me.1, *dy, *dx) {
                 continue;
             }
-            let (y, x) = (me.0 + dy, me.1 + dx);
+            let (y, x) = (me.0 + *dy, me.1 + *dx);
 
             if (y, x) == op {
-                for (dy, dx) in DPOS.iter() {
-                    if self.exist_wall(y, x, *dy, *dx) {
-                        break;
+                if !in_area((y + *dy) as usize, (x + *dx) as usize)
+                    || self.exist_wall(y, x, *dy, *dx)
+                {
+                    for (dy2, dx2) in DPOS.iter() {
+                        if self.exist_wall(y, x, *dy2, *dx2) {
+                            continue;
+                        }
+                        println!("2: {} {}", dy2, dx2);
+                        let (y2, x2) = (y + *dy2, x + *dx2);
+                        if me == (y2, x2) {
+                            continue;
+                        }
+                        if in_area(y2 as usize, x2 as usize) {
+                            moves.push((y2 as usize, x2 as usize));
+                        }
                     }
+                } else {
                     let (y2, x2) = (y + dy, x + dx);
-                    if me == (y2, x2) {
-                        continue;
-                    }
                     if in_area(y2 as usize, x2 as usize) {
                         moves.push((y2 as usize, x2 as usize));
                     }
@@ -233,11 +261,12 @@ impl Quoridor {
                 Ok(()) => {
                     if self.is_white_turn {
                         self.table[*y][*x] = Some((*dir, Colour::White));
-                        self.white_wall_num += 1;
+                        self.white_wall_num -= 1;
                     } else {
                         self.table[*y][*x] = Some((*dir, Colour::Black));
-                        self.black_wall_num += 1;
+                        self.black_wall_num -= 1;
                     }
+                    self.record.push(Record::Wall(*y, *x, *dir));
                     self.last_move = Some((*y, *x));
                 }
                 Err(e) => {
@@ -246,11 +275,26 @@ impl Quoridor {
             },
             Command::Move(y, x) => match self.movable(*y, *x) {
                 Ok(()) => {
-                    if self.is_white_turn {
+                    let (mut dy, mut dx) = if self.is_white_turn {
+                        let (dy, dx) =
+                            (self.white.0 as i8 - *y as i8, self.white.1 as i8 - *x as i8);
                         self.white = (*y, *x);
+                        (dy, dx)
                     } else {
+                        let (dy, dx) =
+                            (self.black.0 as i8 - *y as i8, self.black.1 as i8 - *x as i8);
                         self.black = (*y, *x);
+                        (dy, dx)
+                    };
+                    if dy.abs() == 2 {
+                        dy /= 2;
                     }
+                    if dx.abs() == 2 {
+                        dx /= 2;
+                    }
+                    let movedir = DYDX2MOVEDIR[(dy + 1) as usize][(dx + 1) as usize];
+                    println!("movedir:{}", movedir);
+                    self.record.push(Record::Piece(movedir));
                     self.last_move = None;
                 }
                 Err(e) => {
@@ -260,7 +304,6 @@ impl Quoridor {
         }
         self.is_white_turn = !self.is_white_turn;
         self.turn_num += 1;
-        self.record.push(*com);
         Ok(())
     }
 }
@@ -269,6 +312,12 @@ impl Quoridor {
 enum Command {
     Move(usize, usize),
     Put(usize, usize, Dir),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Record {
+    Piece(u8),
+    Wall(usize, usize, Dir),
 }
 
 impl Command {
@@ -307,22 +356,17 @@ struct JudgeServer {
 }
 
 impl JudgeServer {
+    // README.md
     fn socketformat(&self) -> String {
         let mut output = String::new();
-        let (me, op, me_num, op_num) = (
-            self.game.white,
-            self.game.black,
-            self.game.white_wall_num,
-            self.game.black_wall_num,
-        );
         output += &format!(
             "{} {} {} {} {} {}\n",
-            me.1,
-            me.0,
-            op.1,
-            op.0,
-            WALL_LIMIT - me_num,
-            WALL_LIMIT - op_num
+            self.game.white.1,
+            self.game.white.0,
+            self.game.black.1,
+            self.game.black.0,
+            self.game.white_wall_num,
+            self.game.black_wall_num
         );
 
         for rows in &self.game.table {
@@ -398,11 +442,29 @@ impl JudgeServer {
         bitvec_to_base64(bv)
     }
 
-    fn viewrecordformat(&self) -> String {
-        String::new()
+    fn historyformat(&self) -> String {
+        let mut bv = BitVec::new();
+        bv.push(false);
+        bv.push(true);
+        append(&mut bv, from_u16(self.game.record.len() as u16, 10));
+        for com in &self.game.record {
+            match com {
+                Record::Piece(movedir) => {
+                    bv.push(false);
+                    append(&mut bv, from_u8(*movedir, 3));
+                }
+                Record::Wall(y, x, dir) => {
+                    bv.push(true);
+                    bv.push(*dir == Dir::Vertical);
+                    append(&mut bv, from_u8(wall_to_u8((*y, *x)), 6));
+                }
+            }
+        }
+        bitvec_to_base64(bv)
     }
 
     fn start(&mut self) -> io::Result<()> {
+        println!("listening {}", self.ip);
         println!("{}", self.game.display());
 
         let lis = TcpListener::bind(&self.ip)?;
@@ -470,21 +532,48 @@ impl JudgeServer {
                 println!("{}", result);
                 println!("socket format:\n{}", socketmsg);
                 println!("browser format:\n{}", sendmsg);
-                self.broadcaster.send(ws::Message::Text(sendmsg)).unwrap();
+                self.broadcaster
+                    .send(ws::Message::Text(format!("qfcode:{}", sendmsg)))
+                    .unwrap();
 
-                let mut stream: &TcpStream = &mut self.streams[(from_id + 1) as usize % PLAYER_NUM];
-                stream.write(&socketmsg.as_bytes())?;
+                {
+                    let mut stream: &TcpStream =
+                        &mut self.streams[(from_id + 1) as usize % PLAYER_NUM];
+                    stream.write(&socketmsg.as_bytes())?;
+                }
+                if let Some(winner) = self.game.is_over() {
+                    println!("Player {} win!", winner);
+                    let winner_name = if winner == 0 {
+                        "white".to_string()
+                    } else {
+                        "black".to_string()
+                    };
+                    self.broadcaster
+                        .send(ws::Message::Text(format!(
+                            "mesg:Player {} win!",
+                            winner_name
+                        )))
+                        .unwrap();
+                    thread::sleep(Duration::from_micros(1000));
+                    // output history file
+                    let game_uuid = Uuid::new_v4();
+                    let filename = game_uuid.to_string();
+
+                    let mut f = fs::File::create(filename).unwrap();
+                    f.write_all(self.historyformat().as_bytes()).unwrap();
+                    return Ok(());
+                }
             }
         }
     }
 }
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        println!("{} [ip address]", args[0]);
-        return;
-    }
-    let ip = args[1].clone();
+    let ip = if args.len() >= 2 {
+        args[1].clone()
+    } else {
+        "127.0.0.1".to_string()
+    };
     let wsport = 3012;
     let socketport = 8080;
     let factory = websocket::MyFactory;
