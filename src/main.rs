@@ -99,12 +99,50 @@ impl Quoridor {
             None
         }
     }
-    fn checkwalldir(&self, y: i8, x: i8, dir: Dir) -> bool {
+
+    // 壁のみを考慮した次の手の方向を生成
+    fn next_wallmoves(&self, y: i8, x: i8, table: &Table) -> Vec<(i8, i8)> {
+        let mut wallmoves = Vec::new();
+        for (dy, dx) in DPOS.iter() {
+            if self.exist_wall(y, x, *dy, *dx, table) {
+                continue;
+            }
+            let (y, x) = (y + *dy, x + *dx);
+
+            if in_area(y as usize, x as usize) {
+                wallmoves.push((*dy, *dx));
+            }
+        }
+        wallmoves
+    }
+
+    fn dfs(&self, y: i8, x: i8, table: &Table, gy: i8, visited: &mut Vec<Vec<bool>>) -> bool {
+        if y == gy {
+            return true;
+        }
+        visited[y as usize][x as usize] = true;
+        let moves = self.next_wallmoves(y, x, table);
+        for (dy, dx) in moves {
+            let (ny, nx) = (y + dy, x + dx);
+            if !visited[ny as usize][nx as usize] {
+                if self.dfs(ny, nx, table, gy, visited) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn reachable(&self, y: i8, x: i8, table: &Table, gy: i8) -> bool {
+        let mut visited = vec![vec![false; W]; H];
+        self.dfs(y, x, table, gy, &mut visited)
+    }
+
+    fn checkwalldir(&self, y: i8, x: i8, dir: Dir, table: &Table) -> bool {
         if !in_wall_area(y, x) {
             return false;
         }
         let (y, x) = (y as usize, x as usize);
-        if let Some((d, _)) = self.table[y][x] {
+        if let Some((d, _)) = table[y][x] {
             d == dir
         } else {
             false
@@ -125,23 +163,40 @@ impl Quoridor {
         }
         match dir {
             Dir::Horizontal => {
-                if self.checkwalldir(y as i8, x as i8 - 1, Dir::Horizontal)
-                    || self.checkwalldir(y as i8, x as i8 + 1, Dir::Horizontal)
+                if self.checkwalldir(y as i8, x as i8 - 1, Dir::Horizontal, &self.table)
+                    || self.checkwalldir(y as i8, x as i8 + 1, Dir::Horizontal, &self.table)
                 {
                     return Err("Wall has already built".to_string());
                 }
             }
             Dir::Vertical => {
-                if self.checkwalldir(y as i8 - 1, x as i8, Dir::Vertical)
-                    || self.checkwalldir(y as i8 + 1, x as i8, Dir::Vertical)
+                if self.checkwalldir(y as i8 - 1, x as i8, Dir::Vertical, &self.table)
+                    || self.checkwalldir(y as i8 + 1, x as i8, Dir::Vertical, &self.table)
                 {
                     return Err("Wall has already built".to_string());
                 }
             }
         }
-        Ok(())
+
+        let mut new_table = self.table.clone();
+        if self.is_white_turn {
+            new_table[y][x] = Some((dir, Colour::White));
+        } else {
+            new_table[y][x] = Some((dir, Colour::Black));
+        };
+        if self.reachable(self.white.0 as i8, self.white.1 as i8, &new_table, 0)
+            && self.reachable(
+                self.black.0 as i8,
+                self.black.1 as i8,
+                &new_table,
+                (H - 1) as i8,
+            ) {
+            Ok(())
+        } else {
+            Err("Unreachable".to_string())
+        }
     }
-    fn exist_wall(&self, y: i8, x: i8, dy: i8, dx: i8) -> bool {
+    fn exist_wall(&self, y: i8, x: i8, dy: i8, dx: i8, table: &Table) -> bool {
         let (y1, x1, y2, x2, dir) = if dx != 0 {
             if dx == 1 {
                 (y - 1, x, y, x, Dir::Vertical)
@@ -155,7 +210,7 @@ impl Quoridor {
                 (y - 1, x, y - 1, x - 1, Dir::Horizontal)
             }
         };
-        self.checkwalldir(y1, x1, dir) || self.checkwalldir(y2, x2, dir)
+        self.checkwalldir(y1, x1, dir, table) || self.checkwalldir(y2, x2, dir, table)
     }
     fn next_moves(&self) -> Vec<(usize, usize)> {
         let mut moves = Vec::new();
@@ -170,22 +225,18 @@ impl Quoridor {
                 (self.white.0 as i8, self.white.1 as i8),
             )
         };
-        for (dy, dx) in DPOS.iter() {
-            if self.exist_wall(me.0, me.1, *dy, *dx) {
-                continue;
-            }
-            let (y, x) = (me.0 + *dy, me.1 + *dx);
-
+        let wallmoves = self.next_wallmoves(me.0, me.1, &self.table);
+        for (dy, dx) in wallmoves {
+            let (y, x) = (dy + me.0, dx + me.1);
             if (y, x) == op {
-                if !in_area((y + *dy) as usize, (x + *dx) as usize)
-                    || self.exist_wall(y, x, *dy, *dx)
+                if !in_area((y + dy) as usize, (x + dx) as usize)
+                    || self.exist_wall(y, x, dy, dx, &self.table)
                 {
-                    for (dy2, dx2) in DPOS.iter() {
-                        if self.exist_wall(y, x, *dy2, *dx2) {
+                    for (dy, dx) in DPOS.iter() {
+                        if self.exist_wall(y, x, *dy, *dx, &self.table) {
                             continue;
                         }
-                        println!("2: {} {}", dy2, dx2);
-                        let (y2, x2) = (y + *dy2, x + *dx2);
+                        let (y2, x2) = (y + dy, x + dx);
                         if me == (y2, x2) {
                             continue;
                         }
@@ -199,10 +250,11 @@ impl Quoridor {
                         moves.push((y2 as usize, x2 as usize));
                     }
                 }
-            } else if in_area(y as usize, x as usize) {
+            } else {
                 moves.push((y as usize, x as usize));
             }
         }
+
         moves
     }
     fn movable(&self, y: usize, x: usize) -> Result<(), String> {
