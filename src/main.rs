@@ -63,8 +63,93 @@ impl Dir {
 
 type Table = Vec<Vec<Option<(Dir, Colour)>>>;
 
+#[derive(Clone)]
+struct WallTable {
+    data: Vec<Vec<Option<(Dir, Colour)>>>,
+}
+
+impl WallTable {
+    fn get(&self, y: i8, x: i8) -> Option<(Dir, Colour)> {
+        if in_wall_area(y, x) {
+            self.data[y as usize][x as usize]
+        } else {
+            None
+        }
+    }
+    fn set(&mut self, y: i8, x: i8, dir: Dir, c: Colour) {
+        self.data[y as usize][x as usize] = Some((dir, c));
+    }
+    fn new() -> Self {
+        WallTable {
+            data: vec![vec![None; W - 1]; H - 1],
+        }
+    }
+
+    // 壁のみを考慮した次の手の方向を生成
+    fn next_wallmoves(&self, y: i8, x: i8) -> Vec<(i8, i8)> {
+        let mut wallmoves = Vec::new();
+        for (dy, dx) in DPOS.iter() {
+            if self.exist_wall(y, x, *dy, *dx) {
+                continue;
+            }
+            let (y, x) = (y + *dy, x + *dx);
+
+            if in_area(y as usize, x as usize) {
+                wallmoves.push((*dy, *dx));
+            }
+        }
+        wallmoves
+    }
+
+    fn checkwalldir(&self, y: i8, x: i8, dir: Dir) -> bool {
+        if let Some((d, _)) = self.get(y, x) {
+            d == dir
+        } else {
+            false
+        }
+    }
+
+    fn exist_wall(&self, y: i8, x: i8, dy: i8, dx: i8) -> bool {
+        let (y1, x1, y2, x2, dir) = if dx != 0 {
+            if dx == 1 {
+                (y - 1, x, y, x, Dir::Vertical)
+            } else {
+                (y - 1, x - 1, y, x - 1, Dir::Vertical)
+            }
+        } else {
+            if dy == 1 {
+                (y, x, y, x - 1, Dir::Horizontal)
+            } else {
+                (y - 1, x, y - 1, x - 1, Dir::Horizontal)
+            }
+        };
+        self.checkwalldir(y1, x1, dir) || self.checkwalldir(y2, x2, dir)
+    }
+
+    fn dfs(&self, y: i8, x: i8, gy: i8, visited: &mut Vec<Vec<bool>>) -> bool {
+        if y == gy {
+            return true;
+        }
+        visited[y as usize][x as usize] = true;
+        let moves = self.next_wallmoves(y, x);
+        for (dy, dx) in moves {
+            let (ny, nx) = (y + dy, x + dx);
+            if !visited[ny as usize][nx as usize] {
+                if self.dfs(ny, nx, gy, visited) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    fn reachable(&self, y: i8, x: i8, gy: i8) -> bool {
+        let mut visited = vec![vec![false; W]; H];
+        self.dfs(y, x, gy, &mut visited)
+    }
+}
+
 struct Quoridor {
-    table: Table,
+    table: WallTable,
     white: (usize, usize),
     black: (usize, usize),
     is_white_turn: bool,
@@ -78,7 +163,7 @@ struct Quoridor {
 impl Quoridor {
     fn new() -> Self {
         Quoridor {
-            table: vec![vec![None; W - 1]; H - 1],
+            table: WallTable::new(),
             white: (H - 1, W / 2),
             black: (0, W / 2),
             is_white_turn: true,
@@ -100,78 +185,30 @@ impl Quoridor {
         }
     }
 
-    // 壁のみを考慮した次の手の方向を生成
-    fn next_wallmoves(&self, y: i8, x: i8, table: &Table) -> Vec<(i8, i8)> {
-        let mut wallmoves = Vec::new();
-        for (dy, dx) in DPOS.iter() {
-            if self.exist_wall(y, x, *dy, *dx, table) {
-                continue;
-            }
-            let (y, x) = (y + *dy, x + *dx);
-
-            if in_area(y as usize, x as usize) {
-                wallmoves.push((*dy, *dx));
-            }
-        }
-        wallmoves
-    }
-
-    fn dfs(&self, y: i8, x: i8, table: &Table, gy: i8, visited: &mut Vec<Vec<bool>>) -> bool {
-        if y == gy {
-            return true;
-        }
-        visited[y as usize][x as usize] = true;
-        let moves = self.next_wallmoves(y, x, table);
-        for (dy, dx) in moves {
-            let (ny, nx) = (y + dy, x + dx);
-            if !visited[ny as usize][nx as usize] {
-                if self.dfs(ny, nx, table, gy, visited) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-    fn reachable(&self, y: i8, x: i8, table: &Table, gy: i8) -> bool {
-        let mut visited = vec![vec![false; W]; H];
-        self.dfs(y, x, table, gy, &mut visited)
-    }
-
-    fn checkwalldir(&self, y: i8, x: i8, dir: Dir, table: &Table) -> bool {
-        if !in_wall_area(y, x) {
-            return false;
-        }
-        let (y, x) = (y as usize, x as usize);
-        if let Some((d, _)) = table[y][x] {
-            d == dir
-        } else {
-            false
-        }
-    }
     fn settable(&self, y: usize, x: usize, dir: Dir) -> Result<(), String> {
         if (self.is_white_turn && self.white_wall_num == 0)
             || (!self.is_white_turn && self.black_wall_num == 0)
         {
             return Err("You have no wall".to_string());
         }
-        let y = y - 1;
-        if !in_wall_area(y as i8, x as i8) {
+        let (y, x) = (y as i8 - 1, x as i8);
+        if !in_wall_area(y, x) {
             return Err("Put position is out of bounds".to_string());
         }
-        if self.table[y][x] != None {
+        if self.table.get(y, x) != None {
             return Err("Wall has already built".to_string());
         }
         match dir {
             Dir::Horizontal => {
-                if self.checkwalldir(y as i8, x as i8 - 1, Dir::Horizontal, &self.table)
-                    || self.checkwalldir(y as i8, x as i8 + 1, Dir::Horizontal, &self.table)
+                if self.table.checkwalldir(y, x - 1, Dir::Horizontal)
+                    || self.table.checkwalldir(y, x + 1, Dir::Horizontal)
                 {
                     return Err("Wall has already built".to_string());
                 }
             }
             Dir::Vertical => {
-                if self.checkwalldir(y as i8 - 1, x as i8, Dir::Vertical, &self.table)
-                    || self.checkwalldir(y as i8 + 1, x as i8, Dir::Vertical, &self.table)
+                if self.table.checkwalldir(y - 1, x, Dir::Vertical)
+                    || self.table.checkwalldir(y + 1, x, Dir::Vertical)
                 {
                     return Err("Wall has already built".to_string());
                 }
@@ -180,37 +217,17 @@ impl Quoridor {
 
         let mut new_table = self.table.clone();
         if self.is_white_turn {
-            new_table[y][x] = Some((dir, Colour::White));
+            new_table.set(y, x, dir, Colour::White);
         } else {
-            new_table[y][x] = Some((dir, Colour::Black));
+            new_table.set(y, x, dir, Colour::Black);
         };
-        if self.reachable(self.white.0 as i8, self.white.1 as i8, &new_table, 0)
-            && self.reachable(
-                self.black.0 as i8,
-                self.black.1 as i8,
-                &new_table,
-                (H - 1) as i8,
-            ) {
+        if new_table.reachable(self.white.0 as i8, self.white.1 as i8, 0)
+            && new_table.reachable(self.black.0 as i8, self.black.1 as i8, (H - 1) as i8)
+        {
             Ok(())
         } else {
             Err("Unreachable".to_string())
         }
-    }
-    fn exist_wall(&self, y: i8, x: i8, dy: i8, dx: i8, table: &Table) -> bool {
-        let (y1, x1, y2, x2, dir) = if dx != 0 {
-            if dx == 1 {
-                (y - 1, x, y, x, Dir::Vertical)
-            } else {
-                (y - 1, x - 1, y, x - 1, Dir::Vertical)
-            }
-        } else {
-            if dy == 1 {
-                (y, x, y, x - 1, Dir::Horizontal)
-            } else {
-                (y - 1, x, y - 1, x - 1, Dir::Horizontal)
-            }
-        };
-        self.checkwalldir(y1, x1, dir, table) || self.checkwalldir(y2, x2, dir, table)
     }
     fn next_moves(&self) -> Vec<(usize, usize)> {
         let mut moves = Vec::new();
@@ -225,15 +242,15 @@ impl Quoridor {
                 (self.white.0 as i8, self.white.1 as i8),
             )
         };
-        let wallmoves = self.next_wallmoves(me.0, me.1, &self.table);
+        let wallmoves = self.table.next_wallmoves(me.0, me.1);
         for (dy, dx) in wallmoves {
             let (y, x) = (dy + me.0, dx + me.1);
             if (y, x) == op {
                 if !in_area((y + dy) as usize, (x + dx) as usize)
-                    || self.exist_wall(y, x, dy, dx, &self.table)
+                    || self.table.exist_wall(y, x, dy, dx)
                 {
                     for (dy, dx) in DPOS.iter() {
-                        if self.exist_wall(y, x, *dy, *dx, &self.table) {
+                        if self.table.exist_wall(y, x, *dy, *dx) {
                             continue;
                         }
                         let (y2, x2) = (y + dy, x + dx);
@@ -275,7 +292,7 @@ impl Quoridor {
 
         for i in 0..H - 1 {
             for j in 0..W - 1 {
-                match self.table[i][j] {
+                match self.table.data[i][j] {
                     Some((Dir::Vertical, _)) => {
                         table[2 * i][2 * j + 1] = '|';
                         table[2 * (i + 1)][2 * j + 1] = '|';
@@ -312,10 +329,10 @@ impl Quoridor {
             Command::Put(y, x, dir) => match self.settable(*y + 1, *x, *dir) {
                 Ok(()) => {
                     if self.is_white_turn {
-                        self.table[*y][*x] = Some((*dir, Colour::White));
+                        self.table.set(*y as i8, *x as i8, *dir, Colour::White);
                         self.white_wall_num -= 1;
                     } else {
-                        self.table[*y][*x] = Some((*dir, Colour::Black));
+                        self.table.set(*y as i8, *x as i8, *dir, Colour::Black);
                         self.black_wall_num -= 1;
                     }
                     self.record.push(Record::Wall(*y, *x, *dir));
@@ -421,7 +438,7 @@ impl JudgeServer {
             self.game.black_wall_num
         );
 
-        for rows in &self.game.table {
+        for rows in &self.game.table.data {
             for cell in rows {
                 output += &format!(
                     "{} ",
@@ -448,7 +465,7 @@ impl JudgeServer {
         let mut white_v_walls = Vec::new();
         let mut black_h_walls = Vec::new();
         let mut black_v_walls = Vec::new();
-        for (y, row) in self.game.table.iter().enumerate() {
+        for (y, row) in self.game.table.data.iter().enumerate() {
             for (x, wall) in row.iter().enumerate() {
                 match wall {
                     Some((Dir::Horizontal, Colour::White)) => {
