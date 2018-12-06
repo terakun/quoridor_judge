@@ -645,7 +645,7 @@ fn main() {
     };
     let wsport = 3012;
     let socketport = 8080;
-    let factory = websocket::MyFactory;
+    let factory = websocket::MyFactory::new(&format!("{}:{}", ip, socketport));
     let websocket = ws::WebSocket::new(factory).unwrap();
     let broadcaster = websocket.broadcaster();
     {

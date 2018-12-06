@@ -30,13 +30,25 @@ impl Handler for Server {
     }
 }
 
-pub struct MyFactory;
+pub struct MyFactory {
+    senders: Vec<Sender>,
+    ip: String,
+}
 
+impl MyFactory {
+    pub fn new(ip: &String) -> Self {
+        MyFactory {
+            senders: Vec::new(),
+            ip: ip.clone(),
+        }
+    }
+}
 impl Factory for MyFactory {
     type Handler = Server;
 
     fn connection_made(&mut self, ws: Sender) -> Server {
-        let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+        self.senders.push(ws.clone());
+        let stream = TcpStream::connect(&self.ip).unwrap();
         Server {
             stream: stream,
             out: ws,
