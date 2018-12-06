@@ -76,6 +76,9 @@ impl WallTable {
             None
         }
     }
+    fn erase(&mut self, y: i8, x: i8) {
+        self.data[y as usize][x as usize] = None;
+    }
     fn set(&mut self, y: i8, x: i8, dir: Dir, c: Colour) {
         self.data[y as usize][x as usize] = Some((dir, c));
     }
@@ -173,6 +176,40 @@ impl Quoridor {
             black_wall_num: WALL_LIMIT,
             record: Vec::new(),
         }
+    }
+
+    fn undo(&mut self) -> bool {
+        if self.record.len() < 1 {
+            return false;
+        }
+        let r = self.record.pop().unwrap();
+        match r {
+            Record::Piece(d) => {
+                let (dy, dx) = Record::to_dydx(d).expect(&format!("illegal record:{}", d));
+                if self.is_white_turn {
+                    self.black.0 = (self.black.0 as i8 - dy) as usize;
+                    self.black.1 = (self.black.1 as i8 - dx) as usize;
+                } else {
+                    self.white.0 = (self.white.0 as i8 - dy) as usize;
+                    self.white.1 = (self.white.1 as i8 - dx) as usize;
+                }
+            }
+            Record::Wall(y, x, _) => {
+                self.table.erase(y as i8, x as i8);
+                if self.is_white_turn {
+                    self.black_wall_num += 1;
+                } else {
+                    self.white_wall_num += 1;
+                }
+            }
+        }
+        self.turn_num -= 1;
+        self.last_move = match self.record.last() {
+            Some(Record::Wall(y, x, _)) => Some((*y, *x)),
+            Some(Record::Piece(_)) | None => None,
+        };
+        self.is_white_turn = !self.is_white_turn;
+        true
     }
 
     fn is_over(&self) -> Option<usize> {
@@ -389,6 +426,29 @@ enum Record {
     Wall(usize, usize, Dir),
 }
 
+impl Record {
+    fn to_dydx(d: u8) -> Option<(i8, i8)> {
+        let dy = match d {
+            0 | 1 | 7 => -1,
+            2 | 6 => 0,
+            3 | 4 | 5 => 1,
+
+            _ => {
+                return None;
+            }
+        };
+        let dx = match d {
+            1 | 2 | 3 => 1,
+            0 | 4 => 0,
+            5 | 6 | 7 => -1,
+            _ => {
+                return None;
+            }
+        };
+        Some((dy, dx))
+    }
+}
+
 impl Command {
     fn parse(input: &str) -> Option<Self> {
         let input_vec: Vec<&str> = input.trim().split_whitespace().collect();
@@ -588,6 +648,19 @@ impl JudgeServer {
             thread::sleep(Duration::from_micros(100));
             for (from_id, message) in rx.recv().iter() {
                 println!("{:?}", message);
+                if message == "undo" {
+                    self.game.undo();
+                    self.game.undo();
+                    let sendmsg = self.viewformat();
+                    self.broadcaster
+                        .send(ws::Message::Text(format!("mesg:undo")))
+                        .unwrap();
+
+                    self.broadcaster
+                        .send(ws::Message::Text(format!("qfcode:{}", sendmsg)))
+                        .unwrap();
+                    continue;
+                }
                 let command = Command::parse(&message).expect("parse error");
 
                 if let Err(e) = self.game.play(&command) {
