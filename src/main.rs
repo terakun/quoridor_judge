@@ -716,8 +716,16 @@ fn main() {
     } else {
         "127.0.0.1".to_string()
     };
-    let wsport = 3012;
-    let socketport = 8080;
+    let wsport = if args.len() >= 3 {
+        args[2].parse::<usize>().unwrap()
+    } else {
+        3012
+    };
+    let socketport = if args.len() >= 4 {
+        args[3].parse::<usize>().unwrap()
+    } else {
+        8080
+    };
     let factory = websocket::MyFactory::new(&format!("{}:{}", ip, socketport));
     let websocket = ws::WebSocket::new(factory).unwrap();
     let broadcaster = websocket.broadcaster();
