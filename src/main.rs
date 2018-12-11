@@ -65,7 +65,7 @@ type Table = Vec<Vec<Option<(Dir, Colour)>>>;
 
 #[derive(Clone)]
 struct WallTable {
-    data: Vec<Vec<Option<(Dir, Colour)>>>,
+    data: Table,
 }
 
 impl WallTable {
@@ -613,6 +613,10 @@ impl JudgeServer {
                 ip: addr.to_string(),
                 name: String::new(),
             });
+            self.broadcaster
+                .send(ws::Message::Text(format!("mesg:Player {} came", addr)))
+                .unwrap();
+
             let tx = tx.clone();
 
             let _ = thread::spawn(move || -> io::Result<()> {
@@ -638,6 +642,10 @@ impl JudgeServer {
         }
 
         println!("ready");
+        self.broadcaster
+            .send(ws::Message::Text(format!("mesg:Game Start")))
+            .unwrap();
+
         for (id, mut stream) in self.streams.iter().enumerate() {
             stream.write(&format!("{}\n", id).as_bytes())?;
         }
@@ -648,18 +656,32 @@ impl JudgeServer {
             thread::sleep(Duration::from_micros(100));
             for (from_id, message) in rx.recv().iter() {
                 println!("{:?}", message);
-                if message == "undo" {
-                    self.game.undo();
-                    self.game.undo();
-                    let sendmsg = self.viewformat();
-                    self.broadcaster
-                        .send(ws::Message::Text(format!("mesg:undo")))
-                        .unwrap();
+                let s: Vec<&str> = message.split(":").collect();
+                if s.len() == 2 {
+                    match s[1] {
+                        "undo" => {
+                            self.game.undo();
+                            self.game.undo();
+                            let sendmsg = self.viewformat();
+                            self.broadcaster
+                                .send(ws::Message::Text(format!("mesg:undo")))
+                                .unwrap();
 
-                    self.broadcaster
-                        .send(ws::Message::Text(format!("qfcode:{}", sendmsg)))
-                        .unwrap();
-                    continue;
+                            self.broadcaster
+                                .send(ws::Message::Text(format!("qfcode:{}", sendmsg)))
+                                .unwrap();
+                            continue;
+                        }
+                        other => {
+                            self.broadcaster
+                                .send(ws::Message::Text(format!(
+                                    "mesg:{}:{}",
+                                    self.players[*from_id].ip, other
+                                )))
+                                .unwrap();
+                            continue;
+                        }
+                    }
                 }
                 let command = Command::parse(&message).expect("parse error");
 
